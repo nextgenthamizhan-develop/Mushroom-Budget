@@ -1,0 +1,1306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SporeKeep - Mushroom Farm Manager & Cloud Ledger</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Google Fonts: Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <!-- Firebase Modular SDKs with Permanent Persistence & Local Backup -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+    import { 
+      getAuth, 
+      onAuthStateChanged, 
+      signInWithEmailAndPassword, 
+      createUserWithEmailAndPassword, 
+      signOut,
+      setPersistence,
+      browserLocalPersistence
+    } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+    import { 
+      getFirestore, 
+      collection, 
+      addDoc, 
+      deleteDoc, 
+      doc, 
+      onSnapshot, 
+      query, 
+      orderBy,
+      enableIndexedDbPersistence
+    } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+    // ========================================================
+    // PASTE YOUR FIREBASE CONFIGURATION HERE
+    // ========================================================
+const firebaseConfig = {
+  apiKey: "AIzaSyAUsRiM0xtPbY-bKe5_za_FAXeTHz0NC1c",
+  authDomain: "mushroom-farm-manager-2599f.firebaseapp.com",
+  projectId: "mushroom-farm-manager-2599f",
+  storageBucket: "mushroom-farm-manager-2599f.firebasestorage.app",
+  messagingSenderId: "1003925495012",
+  appId: "1:1003925495012:web:5f5dac4dd640332b7ae0f1",
+  measurementId: "G-BK8VZLKR92"
+};
+
+    // Initialize Firebase Services
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+
+    // Keep login session stored permanently across tabs & browser restarts
+    setPersistence(auth, browserLocalPersistence).catch(err => {
+      console.warn("Auth persistence setup error:", err);
+    });
+
+    // Enable offline disk cache for Firestore
+    enableIndexedDbPersistence(db).catch(err => {
+      if (err.code === 'failed-precondition') {
+        console.warn("Multiple tabs open; persistence active in primary tab.");
+      } else if (err.code === 'unimplemented') {
+        console.warn("Browser does not support IndexedDB persistence.");
+      }
+    });
+
+    // Expose Firebase tools to global window scope
+    window.fbAuth = auth;
+    window.fbDb = db;
+    window.fbMethods = {
+      signInWithEmailAndPassword,
+      createUserWithEmailAndPassword,
+      signOut,
+      collection,
+      addDoc,
+      deleteDoc,
+      doc,
+      onSnapshot,
+      query,
+      orderBy
+    };
+
+    let unsubscribeFirestore = null;
+
+    // Track authentication state
+    onAuthStateChanged(auth, (user) => {
+      const authModal = document.getElementById('authModal');
+      const userBadge = document.getElementById('userNavBadge');
+      const userEmailText = document.getElementById('userEmailText');
+      const cloudStatusText = document.getElementById('cloudStatusText');
+      const cloudDot = document.getElementById('cloudDot');
+
+      if (user) {
+        // Authenticated State
+        authModal.classList.add('hidden');
+        userBadge.classList.remove('hidden');
+        userBadge.classList.add('flex');
+        userEmailText.textContent = user.email;
+        cloudStatusText.textContent = "Cloud Active";
+        cloudDot.className = "w-2 h-2 rounded-full bg-emerald-400 animate-pulse";
+
+        // Load cached records immediately from local backup
+        const localKey = 'farm_records_' + user.uid;
+        const cached = localStorage.getItem(localKey);
+        if (cached) {
+          try {
+            window.farmRecords = JSON.parse(cached);
+            window.updateDashboard();
+          } catch(e) {
+            console.error("Local cache parse error:", e);
+          }
+        }
+
+        // Live real-time listener from Firestore
+        const recordsRef = collection(db, 'users', user.uid, 'records');
+        const q = query(recordsRef, orderBy('date', 'desc'));
+
+        if (unsubscribeFirestore) unsubscribeFirestore();
+
+        unsubscribeFirestore = onSnapshot(q, (snapshot) => {
+          const list = [];
+          snapshot.forEach(docSnap => {
+            list.push({ id: docSnap.id, ...docSnap.data() });
+          });
+
+          window.farmRecords = list;
+          // Persist data locally so reloads are instant
+          localStorage.setItem(localKey, JSON.stringify(list));
+          window.updateDashboard();
+        }, (err) => {
+          console.error("Firestore sync error:", err);
+          window.showToast("Using offline saved records", "error");
+        });
+
+      } else {
+        // Unauthenticated State
+        if (unsubscribeFirestore) unsubscribeFirestore();
+        authModal.classList.remove('hidden');
+        userBadge.classList.add('hidden');
+        userBadge.classList.remove('flex');
+        cloudStatusText.textContent = "Disconnected";
+        cloudDot.className = "w-2 h-2 rounded-full bg-amber-400";
+        window.farmRecords = [];
+        window.updateDashboard();
+      }
+    });
+  </script>
+
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { sans: ['Inter', 'sans-serif'] },
+          colors: {
+            spore: {
+              50: '#f6f7f2', 100: '#eaede0', 200: '#d5dbc3',
+              500: '#647a46', 600: '#4e6235', 700: '#3a4a27',
+              800: '#273419', 900: '#151d0d',
+            }
+          }
+        }
+      }
+    }
+  </script>
+
+  <style>
+    @media print {
+      .no-print { display: none !important; }
+      .print-only { display: block !important; }
+      body { background: white !important; color: black !important; }
+      .shadow-sm, .shadow-md, .shadow-lg { box-shadow: none !important; }
+      .border { border-color: #ddd !important; }
+    }
+    .custom-scrollbar::-webkit-scrollbar { height: 6px; width: 6px; }
+    .custom-scrollbar::-webkit-scrollbar-thumb { background-color: #cbd5e1; border-radius: 9999px; }
+  </style>
+</head>
+<body class="bg-stone-50 text-stone-800 antialiased min-h-screen font-sans flex flex-col">
+
+  <!-- Top Navigation Header -->
+  <header class="bg-spore-700 text-white shadow-md sticky top-0 z-30">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3.5 flex justify-between items-center">
+      <div class="flex items-center space-x-3">
+        <div class="bg-amber-100 text-spore-800 p-2 rounded-xl flex items-center justify-center shadow-inner">
+          <i data-lucide="sprout" class="w-6 h-6 stroke-[2.5]"></i>
+        </div>
+        <div>
+          <h1 class="text-xl font-bold tracking-tight leading-tight flex items-center gap-1.5">
+            Mushroom Farm Ledger
+            <span class="text-[11px] bg-amber-500/20 text-amber-200 border border-amber-400/30 px-2 py-0.5 rounded-full font-medium">Cloud DB</span>
+          </h1>
+          <p class="text-xs text-spore-200">Daily Sales, Crop Yield & Dynamic Balance Sync</p>
+        </div>
+      </div>
+      
+      <!-- Right Toolbar -->
+      <div class="flex items-center space-x-2 sm:space-x-3">
+        <div class="hidden sm:flex items-center gap-1.5 bg-spore-800/80 border border-spore-600 px-2.5 py-1.5 rounded-lg text-xs font-medium">
+          <span id="cloudDot" class="w-2 h-2 rounded-full bg-amber-400"></span>
+          <span id="cloudStatusText" class="text-spore-200">Connecting...</span>
+        </div>
+
+        <div class="flex items-center bg-spore-800/80 rounded-lg px-2.5 py-1.5 border border-spore-600">
+          <label for="currencySelect" class="text-xs text-spore-200 mr-1.5 font-medium">Curr:</label>
+          <select id="currencySelect" class="bg-transparent text-white text-xs font-semibold focus:outline-none cursor-pointer">
+            <option value="Rs" class="text-stone-900">Rs (LKR/INR)</option>
+            <option value="$" class="text-stone-900">$ (USD)</option>
+            <option value="€" class="text-stone-900">€ (EUR)</option>
+            <option value="£" class="text-stone-900">£ (GBP)</option>
+            <option value="₱" class="text-stone-900">₱ (PHP)</option>
+            <option value="৳" class="text-stone-900">৳ (BDT)</option>
+          </select>
+        </div>
+
+        <!-- User Profile Nav Badge -->
+        <div id="userNavBadge" class="hidden items-center gap-2 bg-spore-800/90 border border-spore-600 rounded-lg px-2.5 py-1.5">
+          <i data-lucide="user" class="w-3.5 h-3.5 text-amber-300"></i>
+          <span id="userEmailText" class="text-xs max-w-[120px] sm:max-w-[180px] truncate font-medium text-spore-100">user@mail.com</span>
+          <button onclick="handleLogout()" title="Log Out" class="ml-1 text-spore-300 hover:text-white transition">
+            <i data-lucide="log-out" class="w-3.5 h-3.5"></i>
+          </button>
+        </div>
+
+        <button onclick="window.print()" class="no-print hidden sm:flex items-center gap-1 bg-spore-600 hover:bg-spore-500 text-white text-xs font-medium px-3 py-2 rounded-lg transition shadow-sm">
+          <i data-lucide="printer" class="w-4 h-4"></i>
+          <span>Print</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="flex-grow max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+
+    <!-- Notification Toast Container -->
+    <div id="toastContainer" class="fixed top-16 right-4 z-50 flex flex-col gap-2 pointer-events-none"></div>
+
+    <!-- Filter Bar -->
+    <section class="bg-white p-4 rounded-2xl shadow-sm border border-stone-200 flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div class="flex items-center gap-2 overflow-x-auto pb-1 md:pb-0 custom-scrollbar">
+        <span class="text-xs font-semibold text-stone-500 uppercase tracking-wider flex items-center gap-1">
+          <i data-lucide="calendar" class="w-3.5 h-3.5"></i> Period:
+        </span>
+        <button onclick="setFilter('all')" id="btn-filter-all" class="filter-btn px-3 py-1.5 text-xs font-medium rounded-lg border transition bg-spore-600 text-white border-spore-600">All Time</button>
+        <button onclick="setFilter('today')" id="btn-filter-today" class="filter-btn px-3 py-1.5 text-xs font-medium rounded-lg border border-stone-300 text-stone-600 hover:bg-stone-100 transition">Today</button>
+        <button onclick="setFilter('week')" id="btn-filter-week" class="filter-btn px-3 py-1.5 text-xs font-medium rounded-lg border border-stone-300 text-stone-600 hover:bg-stone-100 transition">This Week</button>
+        <button onclick="setFilter('month')" id="btn-filter-month" class="filter-btn px-3 py-1.5 text-xs font-medium rounded-lg border border-stone-300 text-stone-600 hover:bg-stone-100 transition">This Month</button>
+      </div>
+
+      <div class="flex items-center gap-2 text-xs flex-wrap">
+        <label class="text-stone-500 font-medium">Custom Range:</label>
+        <input type="date" id="filterStartDate" onchange="applyCustomRange()" class="border border-stone-300 rounded-lg px-2 py-1 text-xs focus:ring-1 focus:ring-spore-600 focus:outline-none">
+        <span class="text-stone-400">to</span>
+        <input type="date" id="filterEndDate" onchange="applyCustomRange()" class="border border-stone-300 rounded-lg px-2 py-1 text-xs focus:ring-1 focus:ring-spore-600 focus:outline-none">
+        <button onclick="clearCustomRange()" title="Clear Range" class="p-1.5 hover:bg-stone-100 rounded text-stone-500">
+          <i data-lucide="rotate-ccw" class="w-3.5 h-3.5"></i>
+        </button>
+      </div>
+    </section>
+
+    <!-- Financial Overview Summary Cards -->
+    <section class="grid grid-cols-2 lg:grid-cols-5 gap-3.5 sm:gap-4">
+      <!-- Income -->
+      <div class="bg-gradient-to-br from-emerald-50 to-emerald-100/60 p-4 rounded-2xl border border-emerald-200 shadow-sm flex flex-col justify-between">
+        <div class="flex justify-between items-start">
+          <span class="text-xs font-semibold text-emerald-800 uppercase tracking-wider">Total Income</span>
+          <span class="p-2 rounded-xl bg-emerald-200/70 text-emerald-800"><i data-lucide="trending-up" class="w-4 h-4"></i></span>
+        </div>
+        <div class="mt-2">
+          <div id="statIncome" class="text-lg sm:text-2xl font-bold text-emerald-900">Rs 0.00</div>
+          <p class="text-[11px] text-emerald-700 font-medium mt-0.5" id="statSalesCount">0 sales</p>
+        </div>
+      </div>
+
+      <!-- Expense -->
+      <div class="bg-gradient-to-br from-rose-50 to-rose-100/60 p-4 rounded-2xl border border-rose-200 shadow-sm flex flex-col justify-between">
+        <div class="flex justify-between items-start">
+          <span class="text-xs font-semibold text-rose-800 uppercase tracking-wider">Total Expenses</span>
+          <span class="p-2 rounded-xl bg-rose-200/70 text-rose-800"><i data-lucide="trending-down" class="w-4 h-4"></i></span>
+        </div>
+        <div class="mt-2">
+          <div id="statExpense" class="text-lg sm:text-2xl font-bold text-rose-900">Rs 0.00</div>
+          <p class="text-[11px] text-rose-700 font-medium mt-0.5" id="statExpenseCount">0 cost logs</p>
+        </div>
+      </div>
+
+      <!-- Net Balance -->
+      <div class="bg-gradient-to-br from-spore-50 to-amber-50 p-4 rounded-2xl border border-spore-200 shadow-sm flex flex-col justify-between col-span-2 sm:col-span-1">
+        <div class="flex justify-between items-start">
+          <span class="text-xs font-semibold text-stone-700 uppercase tracking-wider">Net Balance</span>
+          <span id="balanceIconContainer" class="p-2 rounded-xl bg-amber-200/70 text-amber-900"><i data-lucide="wallet" class="w-4 h-4"></i></span>
+        </div>
+        <div class="mt-2">
+          <div id="statNetBalance" class="text-lg sm:text-2xl font-bold text-stone-900">Rs 0.00</div>
+          <p id="statNetLabel" class="text-[11px] text-stone-600 font-medium mt-0.5">Calculated profit</p>
+        </div>
+      </div>
+
+      <!-- Mushroom Volume Sold -->
+      <div class="bg-gradient-to-br from-stone-50 to-stone-100 p-4 rounded-2xl border border-stone-200 shadow-sm flex flex-col justify-between">
+        <div class="flex justify-between items-start">
+          <span class="text-xs font-semibold text-stone-600 uppercase tracking-wider">Mushrooms Sold</span>
+          <span class="p-2 rounded-xl bg-stone-200 text-stone-700"><i data-lucide="package" class="w-4 h-4"></i></span>
+        </div>
+        <div class="mt-2">
+          <div id="statTotalQuantity" class="text-lg sm:text-2xl font-bold text-stone-800">0 kg</div>
+          <p class="text-[11px] text-stone-500 font-medium mt-0.5">Crop volume</p>
+        </div>
+      </div>
+
+      <!-- Rolling 7-day Balance -->
+      <div class="bg-gradient-to-br from-amber-50/80 to-amber-100/70 p-4 rounded-2xl border border-amber-200 shadow-sm flex flex-col justify-between col-span-2 lg:col-span-1">
+        <div class="flex justify-between items-start">
+          <span class="text-xs font-semibold text-amber-900 uppercase tracking-wider">This Week Net</span>
+          <span class="p-2 rounded-xl bg-amber-200/80 text-amber-900"><i data-lucide="calendar-check" class="w-4 h-4"></i></span>
+        </div>
+        <div class="mt-2">
+          <div id="statWeeklyBalance" class="text-lg sm:text-2xl font-bold text-amber-950">Rs 0.00</div>
+          <p class="text-[11px] text-amber-800 font-medium mt-0.5">Rolling 7-day period</p>
+        </div>
+      </div>
+    </section>
+
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+      <!-- Left Column: Forms & Summaries -->
+      <div class="lg:col-span-5 space-y-4 no-print">
+        <div class="bg-white rounded-2xl shadow-sm border border-stone-200 overflow-hidden">
+          
+          <div class="flex border-b border-stone-200 bg-stone-50/70 p-1.5 gap-1.5">
+            <button id="tabSaleBtn" onclick="switchFormTab('sale')" class="flex-1 py-2.5 px-3 rounded-xl font-semibold text-xs sm:text-sm flex items-center justify-center gap-2 transition bg-emerald-700 text-white shadow-sm">
+              <i data-lucide="plus-circle" class="w-4 h-4"></i>
+              Record Sale
+            </button>
+            <button id="tabExpenseBtn" onclick="switchFormTab('expense')" class="flex-1 py-2.5 px-3 rounded-xl font-semibold text-xs sm:text-sm flex items-center justify-center gap-2 transition text-stone-600 hover:text-stone-900 hover:bg-stone-200/60">
+              <i data-lucide="minus-circle" class="w-4 h-4"></i>
+              Record Expense
+            </button>
+          </div>
+
+          <!-- Sale Form -->
+          <form id="saleForm" onsubmit="handleSaleSubmit(event)" class="p-4 sm:p-5 space-y-3.5">
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <label class="block text-xs font-medium text-stone-600 mb-1">Date *</label>
+                <input type="date" id="saleDate" required class="w-full text-xs sm:text-sm px-3 py-2 rounded-xl border border-stone-300 focus:ring-2 focus:ring-emerald-500 focus:outline-none">
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-stone-600 mb-1">Variety</label>
+                <select id="saleVariety" class="w-full text-xs sm:text-sm px-3 py-2 rounded-xl border border-stone-300 focus:ring-2 focus:ring-emerald-500 focus:outline-none bg-white">
+                  <option value="Oyster">Oyster (Grey/White)</option>
+                  <option value="Button">Button Mushroom</option>
+                  <option value="Milky">Milky Mushroom</option>
+                  <option value="Shiitake">Shiitake</option>
+                  <option value="Paddy Straw">Paddy Straw</option>
+                  <option value="Other">Other / Mixed</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="grid grid-cols-3 gap-2.5">
+              <div>
+                <label class="block text-xs font-medium text-stone-600 mb-1">Qty *</label>
+                <input type="number" step="0.01" min="0.01" id="saleQty" required placeholder="e.g. 5" oninput="calculateSaleTotal()" class="w-full text-xs sm:text-sm px-3 py-2 rounded-xl border border-stone-300 focus:ring-2 focus:ring-emerald-500 focus:outline-none">
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-stone-600 mb-1">Unit</label>
+                <select id="saleUnit" class="w-full text-xs sm:text-sm px-2 py-2 rounded-xl border border-stone-300 focus:ring-2 focus:ring-emerald-500 focus:outline-none bg-white">
+                  <option value="kg">kg</option>
+                  <option value="packets">pkts (200g)</option>
+                  <option value="grams">grams</option>
+                  <option value="boxes">boxes</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-stone-600 mb-1">Price/Unit *</label>
+                <input type="number" step="0.01" min="0" id="salePrice" required placeholder="e.g. 400" oninput="calculateSaleTotal()" class="w-full text-xs sm:text-sm px-3 py-2 rounded-xl border border-stone-300 focus:ring-2 focus:ring-emerald-500 focus:outline-none">
+              </div>
+            </div>
+
+            <div class="bg-emerald-50/70 border border-emerald-200/80 rounded-xl px-3.5 py-2.5 flex justify-between items-center">
+              <span class="text-xs font-medium text-emerald-800">Total Income:</span>
+              <span id="saleTotalPreview" class="text-base font-bold text-emerald-900">Rs 0.00</span>
+            </div>
+
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <label class="block text-xs font-medium text-stone-600 mb-1">Customer / Buyer</label>
+                <input type="text" id="saleCustomer" placeholder="Local shop, wholesale, direct..." class="w-full text-xs sm:text-sm px-3 py-2 rounded-xl border border-stone-300 focus:ring-2 focus:ring-emerald-500 focus:outline-none">
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-stone-600 mb-1">Payment Status</label>
+                <select id="salePaymentStatus" class="w-full text-xs sm:text-sm px-3 py-2 rounded-xl border border-stone-300 focus:ring-2 focus:ring-emerald-500 focus:outline-none bg-white">
+                  <option value="Paid (Cash)">Paid (Cash)</option>
+                  <option value="Paid (Bank/Online)">Paid (Bank/Online)</option>
+                  <option value="Credit / Due">Credit / Due Later</option>
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <label class="block text-xs font-medium text-stone-600 mb-1">Notes</label>
+              <input type="text" id="saleNotes" placeholder="e.g. Morning harvest batch #2" class="w-full text-xs sm:text-sm px-3 py-2 rounded-xl border border-stone-300 focus:ring-2 focus:ring-emerald-500 focus:outline-none">
+            </div>
+
+            <button type="submit" id="saleSubmitBtn" class="w-full bg-emerald-700 hover:bg-emerald-800 active:scale-[0.99] text-white font-semibold py-2.5 rounded-xl shadow transition flex items-center justify-center gap-1.5 text-sm">
+              <i data-lucide="cloud-upload" class="w-4 h-4"></i>
+              Sync Sale to Cloud
+            </button>
+          </form>
+
+          <!-- Expense Form -->
+          <form id="expenseForm" onsubmit="handleExpenseSubmit(event)" class="p-4 sm:p-5 space-y-3.5 hidden">
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <label class="block text-xs font-medium text-stone-600 mb-1">Date *</label>
+                <input type="date" id="expenseDate" required class="w-full text-xs sm:text-sm px-3 py-2 rounded-xl border border-stone-300 focus:ring-2 focus:ring-rose-500 focus:outline-none">
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-stone-600 mb-1">Category *</label>
+                <select id="expenseCategory" required class="w-full text-xs sm:text-sm px-3 py-2 rounded-xl border border-stone-300 focus:ring-2 focus:ring-rose-500 focus:outline-none bg-white">
+                  <option value="Spawn & Seed">Spawn / Seeds</option>
+                  <option value="Substrate & Straw">Substrate (Straw, Sawdust, Lime)</option>
+                  <option value="Packaging & Bags">Poly Bags, Trays & Rubber bands</option>
+                  <option value="Electricity & Water">Electricity & Water / Humidifier</option>
+                  <option value="Labor & Farm Workers">Labor & Worker Wages</option>
+                  <option value="Sterilization & Gas">Sterilization, Firewood, LPG Gas</option>
+                  <option value="Transport & Delivery">Transport & Fuel</option>
+                  <option value="Equipment Maintenance">Racks, Sprayers & Tools</option>
+                  <option value="Other Expenses">Other Misc Expense</option>
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <label class="block text-xs font-medium text-stone-600 mb-1">Amount Spent *</label>
+              <input type="number" step="0.01" min="0.01" id="expenseAmount" required placeholder="e.g. 1500" class="w-full text-xs sm:text-sm px-3 py-2 rounded-xl border border-stone-300 focus:ring-2 focus:ring-rose-500 focus:outline-none">
+            </div>
+
+            <div>
+              <label class="block text-xs font-medium text-stone-600 mb-1">Description / Item *</label>
+              <input type="text" id="expenseDescription" placeholder="e.g. 20 packets pure oyster spawn" required class="w-full text-xs sm:text-sm px-3 py-2 rounded-xl border border-stone-300 focus:ring-2 focus:ring-rose-500 focus:outline-none">
+            </div>
+
+            <div>
+              <label class="block text-xs font-medium text-stone-600 mb-1">Payment Method</label>
+              <select id="expensePaymentMethod" class="w-full text-xs sm:text-sm px-3 py-2 rounded-xl border border-stone-300 focus:ring-2 focus:ring-rose-500 focus:outline-none bg-white">
+                <option value="Cash">Cash</option>
+                <option value="Bank Transfer">Bank Transfer / Online</option>
+                <option value="Credit / Due">Credit / Payable</option>
+              </select>
+            </div>
+
+            <button type="submit" id="expenseSubmitBtn" class="w-full bg-rose-700 hover:bg-rose-800 active:scale-[0.99] text-white font-semibold py-2.5 rounded-xl shadow transition flex items-center justify-center gap-1.5 text-sm">
+              <i data-lucide="cloud-upload" class="w-4 h-4"></i>
+              Sync Expense to Cloud
+            </button>
+          </form>
+
+        </div>
+
+        <!-- Weekly Summary Insights Accordion -->
+        <div class="bg-white rounded-2xl p-4 shadow-sm border border-stone-200 space-y-3">
+          <div class="flex items-center justify-between">
+            <h3 class="font-bold text-stone-800 text-sm flex items-center gap-1.5">
+              <i data-lucide="bar-chart-2" class="w-4 h-4 text-spore-600"></i>
+              Weekly Balance Breakdown
+            </h3>
+            <span class="text-[11px] text-stone-500 font-medium">Cloud aggregated</span>
+          </div>
+          <div id="weeklyBreakdownList" class="space-y-2 max-h-56 overflow-y-auto pr-1 text-xs custom-scrollbar">
+            <!-- Dynamic Weekly Summary Rows injected here -->
+          </div>
+        </div>
+
+        <!-- CSV Export Tool -->
+        <div class="bg-white rounded-2xl p-4 shadow-sm border border-stone-200 flex items-center justify-between text-xs text-stone-600">
+          <button onclick="exportToCSV()" class="flex items-center gap-1.5 font-medium hover:text-spore-700 py-1 px-2 rounded-lg hover:bg-stone-100 transition">
+            <i data-lucide="download" class="w-3.5 h-3.5"></i> Export CSV
+          </button>
+          <span class="text-[11px] text-stone-400">Continuous cloud backup enabled</span>
+        </div>
+      </div>
+
+      <!-- Right Column: Ledger Log Table -->
+      <div class="lg:col-span-7 space-y-4">
+        <div class="bg-white rounded-2xl shadow-sm border border-stone-200 flex flex-col h-full min-h-[500px]">
+          
+          <div class="p-4 border-b border-stone-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-stone-50/50 rounded-t-2xl">
+            <div class="flex items-center gap-2">
+              <h2 class="font-bold text-stone-800 text-sm sm:text-base flex items-center gap-2">
+                <i data-lucide="book-open" class="w-4 h-4 text-spore-600"></i>
+                Daily Ledger Records
+              </h2>
+              <span id="recordCountBadge" class="bg-stone-200 text-stone-700 text-xs px-2 py-0.5 rounded-full font-semibold">0</span>
+            </div>
+
+            <div class="flex items-center gap-2">
+              <div class="relative">
+                <i data-lucide="search" class="w-3.5 h-3.5 text-stone-400 absolute left-2.5 top-1/2 -translate-y-1/2"></i>
+                <input type="text" id="searchRecordsInput" oninput="renderRecords()" placeholder="Search crop, vendor, note..." class="pl-8 pr-3 py-1.5 text-xs rounded-xl border border-stone-300 focus:outline-none focus:ring-1 focus:ring-spore-600 w-44 sm:w-56">
+              </div>
+
+              <select id="typeFilterSelect" onchange="renderRecords()" class="text-xs border border-stone-300 rounded-xl px-2.5 py-1.5 focus:outline-none bg-white font-medium text-stone-700">
+                <option value="ALL">All Entries</option>
+                <option value="SALE">Sales Only</option>
+                <option value="EXPENSE">Expenses Only</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Table Container -->
+          <div class="overflow-x-auto flex-grow custom-scrollbar">
+            <table class="w-full text-left text-xs sm:text-sm">
+              <thead class="bg-stone-100/75 text-stone-600 uppercase text-[11px] font-semibold tracking-wider border-b border-stone-200">
+                <tr>
+                  <th class="py-3 px-3 sm:px-4">Date</th>
+                  <th class="py-3 px-2 sm:px-3">Type</th>
+                  <th class="py-3 px-3 sm:px-4">Details / Item</th>
+                  <th class="py-3 px-2 sm:px-3 text-right">Qty / Rate</th>
+                  <th class="py-3 px-3 sm:px-4 text-right">Amount</th>
+                  <th class="py-3 px-2 sm:px-3 text-center no-print">Action</th>
+                </tr>
+              </thead>
+              <tbody id="recordsTableBody" class="divide-y divide-stone-100 text-stone-700">
+                <!-- Dynamically populated rows -->
+              </tbody>
+            </table>
+
+            <div id="emptyState" class="hidden flex flex-col items-center justify-center p-12 text-center">
+              <div class="p-3 bg-stone-100 text-stone-400 rounded-2xl mb-3">
+                <i data-lucide="clipboard-list" class="w-8 h-8"></i>
+              </div>
+              <h4 class="font-bold text-stone-700 text-sm">No records found</h4>
+              <p class="text-xs text-stone-500 max-w-xs mt-1">There are no sales or expenses saved for this filter range.</p>
+            </div>
+          </div>
+
+          <!-- Summary Ledger Footer -->
+          <div class="p-3.5 bg-stone-50 border-t border-stone-200 rounded-b-2xl flex flex-col sm:flex-row justify-between items-center text-xs text-stone-600 gap-2">
+            <span class="font-medium">Filtered Result: <span id="filteredStatsSummary">0 sales, 0 expenses</span></span>
+            <div class="flex items-center gap-3">
+              <span>Income: <b class="text-emerald-700" id="footerTotalIncome">Rs 0</b></span>
+              <span>Expenses: <b class="text-rose-700" id="footerTotalExpense">Rs 0</b></span>
+              <span>Balance: <b class="text-stone-900" id="footerTotalBalance">Rs 0</b></span>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+    </div>
+  </main>
+
+  <!-- Login & Register Modal Popup -->
+  <div id="authModal" class="fixed inset-0 bg-stone-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-3xl shadow-2xl max-w-md w-full p-6 sm:p-8 border border-stone-200 relative">
+      <div class="text-center mb-6">
+        <div class="inline-flex bg-amber-100 text-spore-800 p-3 rounded-2xl mb-2">
+          <i data-lucide="sprout" class="w-8 h-8 stroke-[2.5]"></i>
+        </div>
+        <h2 id="authTitle" class="text-2xl font-bold text-stone-900">Sign In to Farm Ledger</h2>
+        <p id="authSubtitle" class="text-xs text-stone-500 mt-1">Access your secure daily accounts & cloud storage</p>
+      </div>
+
+      <!-- Auth Toggle Tabs -->
+      <div class="flex bg-stone-100 p-1 rounded-xl mb-4 text-xs font-semibold">
+        <button id="toggleLoginBtn" onclick="setAuthMode('login')" class="flex-1 py-2 rounded-lg bg-white shadow-sm text-stone-900">Sign In</button>
+        <button id="toggleRegisterBtn" onclick="setAuthMode('register')" class="flex-1 py-2 rounded-lg text-stone-500 hover:text-stone-900">Register</button>
+      </div>
+
+      <form id="authForm" onsubmit="handleAuthSubmit(event)" class="space-y-4">
+        <div>
+          <label class="block text-xs font-medium text-stone-700 mb-1">Email Address</label>
+          <div class="relative">
+            <i data-lucide="mail" class="w-4 h-4 text-stone-400 absolute left-3 top-1/2 -translate-y-1/2"></i>
+            <input type="email" id="authEmail" required placeholder="grower@farm.com" class="w-full text-xs sm:text-sm pl-9 pr-3 py-2.5 rounded-xl border border-stone-300 focus:ring-2 focus:ring-spore-600 focus:outline-none">
+          </div>
+        </div>
+
+        <div>
+          <label class="block text-xs font-medium text-stone-700 mb-1">Password</label>
+          <div class="relative">
+            <i data-lucide="lock" class="w-4 h-4 text-stone-400 absolute left-3 top-1/2 -translate-y-1/2"></i>
+            <input type="password" id="authPassword" required minlength="6" placeholder="••••••••" class="w-full text-xs sm:text-sm pl-9 pr-3 py-2.5 rounded-xl border border-stone-300 focus:ring-2 focus:ring-spore-600 focus:outline-none">
+          </div>
+        </div>
+
+        <p id="authError" class="text-xs text-rose-600 font-medium hidden"></p>
+
+        <button type="submit" id="authSubmitBtn" class="w-full bg-spore-700 hover:bg-spore-800 text-white font-semibold py-3 rounded-xl shadow transition text-sm flex items-center justify-center gap-2">
+          <span>Sign In</span>
+          <i data-lucide="arrow-right" class="w-4 h-4"></i>
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Confirmation Delete Modal -->
+  <div id="confirmModal" class="fixed inset-0 bg-stone-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+    <div class="bg-white rounded-2xl shadow-xl max-w-sm w-full p-5 space-y-4 border border-stone-200">
+      <div class="flex items-center gap-3">
+        <div id="modalIconContainer" class="p-2.5 rounded-xl bg-rose-100 text-rose-700">
+          <i data-lucide="alert-triangle" class="w-5 h-5"></i>
+        </div>
+        <div>
+          <h3 id="modalTitle" class="font-bold text-stone-900 text-base">Confirm Delete</h3>
+          <p id="modalDesc" class="text-xs text-stone-600 mt-0.5">Are you sure you want to proceed?</p>
+        </div>
+      </div>
+      <div class="flex justify-end gap-2 pt-2">
+        <button id="modalCancelBtn" class="px-4 py-2 text-xs font-semibold rounded-xl text-stone-600 hover:bg-stone-100 transition">Cancel</button>
+        <button id="modalConfirmBtn" class="px-4 py-2 text-xs font-semibold rounded-xl bg-rose-600 hover:bg-rose-700 text-white transition">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const CURRENCY_KEY = 'sporekeep_farm_currency_v1';
+
+    window.farmRecords = [];
+    let currentCurrency = 'Rs';
+    let currentFilter = 'all'; 
+    let customStartDate = null;
+    let customEndDate = null;
+    let authMode = 'login';
+
+    window.addEventListener('DOMContentLoaded', () => {
+      const todayStr = new Date().toISOString().split('T')[0];
+      const saleDateInput = document.getElementById('saleDate');
+      const expenseDateInput = document.getElementById('expenseDate');
+      if (saleDateInput) saleDateInput.value = todayStr;
+      if (expenseDateInput) expenseDateInput.value = todayStr;
+
+      const savedCurrency = localStorage.getItem(CURRENCY_KEY);
+      if (savedCurrency) {
+        currentCurrency = savedCurrency;
+        document.getElementById('currencySelect').value = savedCurrency;
+      }
+
+      document.getElementById('currencySelect').addEventListener('change', (e) => {
+        currentCurrency = e.target.value;
+        localStorage.setItem(CURRENCY_KEY, currentCurrency);
+        calculateSaleTotal();
+        window.updateDashboard();
+        showToast('Currency set to ' + currentCurrency);
+      });
+
+      window.updateDashboard();
+      lucide.createIcons();
+    });
+
+    // ------------------------------------
+    // AUTHENTICATION LOGIC
+    // ------------------------------------
+    function setAuthMode(mode) {
+      authMode = mode;
+      const title = document.getElementById('authTitle');
+      const sub = document.getElementById('authSubtitle');
+      const btn = document.getElementById('authSubmitBtn');
+      const tabLogin = document.getElementById('toggleLoginBtn');
+      const tabReg = document.getElementById('toggleRegisterBtn');
+      const errEl = document.getElementById('authError');
+      errEl.classList.add('hidden');
+
+      if (mode === 'login') {
+        title.textContent = "Sign In to Farm Ledger";
+        sub.textContent = "Access your secure daily accounts & cloud storage";
+        btn.querySelector('span').textContent = "Sign In";
+        tabLogin.className = "flex-1 py-2 rounded-lg bg-white shadow-sm text-stone-900";
+        tabReg.className = "flex-1 py-2 rounded-lg text-stone-500 hover:text-stone-900";
+      } else {
+        title.textContent = "Create Cloud Account";
+        sub.textContent = "Start maintaining farm records in cloud storage";
+        btn.querySelector('span').textContent = "Create Account";
+        tabReg.className = "flex-1 py-2 rounded-lg bg-white shadow-sm text-stone-900";
+        tabLogin.className = "flex-1 py-2 rounded-lg text-stone-500 hover:text-stone-900";
+      }
+      lucide.createIcons();
+    }
+
+    async function handleAuthSubmit(e) {
+      e.preventDefault();
+      const email = document.getElementById('authEmail').value.trim();
+      const password = document.getElementById('authPassword').value;
+      const errEl = document.getElementById('authError');
+      const btn = document.getElementById('authSubmitBtn');
+
+      errEl.classList.add('hidden');
+      btn.disabled = true;
+      btn.classList.add('opacity-70');
+
+      try {
+        if (authMode === 'login') {
+          await window.fbMethods.signInWithEmailAndPassword(window.fbAuth, email, password);
+          showToast('Welcome back! Cloud sync active.');
+        } else {
+          await window.fbMethods.createUserWithEmailAndPassword(window.fbAuth, email, password);
+          showToast('Account created! Your ledger is ready.');
+        }
+      } catch (err) {
+        console.error(err);
+        errEl.textContent = err.message.replace('Firebase: ', '');
+        errEl.classList.remove('hidden');
+      } finally {
+        btn.disabled = false;
+        btn.classList.remove('opacity-70');
+      }
+    }
+
+    async function handleLogout() {
+      try {
+        await window.fbMethods.signOut(window.fbAuth);
+        showToast('Logged out successfully.');
+      } catch (err) {
+        showToast('Logout error', 'error');
+      }
+    }
+
+    // ------------------------------------
+    // FORM INTERACTIONS
+    // ------------------------------------
+    function switchFormTab(tab) {
+      const saleBtn = document.getElementById('tabSaleBtn');
+      const expenseBtn = document.getElementById('tabExpenseBtn');
+      const saleForm = document.getElementById('saleForm');
+      const expenseForm = document.getElementById('expenseForm');
+
+      if (tab === 'sale') {
+        saleBtn.className = "flex-1 py-2.5 px-3 rounded-xl font-semibold text-xs sm:text-sm flex items-center justify-center gap-2 transition bg-emerald-700 text-white shadow-sm";
+        expenseBtn.className = "flex-1 py-2.5 px-3 rounded-xl font-semibold text-xs sm:text-sm flex items-center justify-center gap-2 transition text-stone-600 hover:text-stone-900 hover:bg-stone-200/60";
+        saleForm.classList.remove('hidden');
+        expenseForm.classList.add('hidden');
+      } else {
+        expenseBtn.className = "flex-1 py-2.5 px-3 rounded-xl font-semibold text-xs sm:text-sm flex items-center justify-center gap-2 transition bg-rose-700 text-white shadow-sm";
+        saleBtn.className = "flex-1 py-2.5 px-3 rounded-xl font-semibold text-xs sm:text-sm flex items-center justify-center gap-2 transition text-stone-600 hover:text-stone-900 hover:bg-stone-200/60";
+        expenseForm.classList.remove('hidden');
+        saleForm.classList.add('hidden');
+      }
+      lucide.createIcons();
+    }
+
+    function calculateSaleTotal() {
+      const qty = parseFloat(document.getElementById('saleQty').value) || 0;
+      const price = parseFloat(document.getElementById('salePrice').value) || 0;
+      const total = qty * price;
+      document.getElementById('saleTotalPreview').textContent = formatMoney(total);
+    }
+
+    async function handleSaleSubmit(e) {
+      e.preventDefault();
+      const user = window.fbAuth.currentUser;
+      if (!user) {
+        showToast('Please sign in first', 'error');
+        return;
+      }
+
+      const date = document.getElementById('saleDate').value;
+      const variety = document.getElementById('saleVariety').value;
+      const qty = parseFloat(document.getElementById('saleQty').value);
+      const unit = document.getElementById('saleUnit').value;
+      const price = parseFloat(document.getElementById('salePrice').value);
+      const customer = document.getElementById('saleCustomer').value.trim() || 'General Customer';
+      const paymentStatus = document.getElementById('salePaymentStatus').value;
+      const notes = document.getElementById('saleNotes').value.trim();
+
+      if (!date || isNaN(qty) || isNaN(price) || qty <= 0) {
+        showToast('Please check date, quantity, and unit price.', 'error');
+        return;
+      }
+
+      const totalAmount = qty * price;
+      const record = {
+        type: 'SALE',
+        date: date,
+        cropVariety: variety,
+        quantity: qty,
+        unit: unit,
+        unitPrice: price,
+        amount: totalAmount,
+        customer: customer,
+        paymentStatus: paymentStatus,
+        notes: notes,
+        createdAt: new Date().toISOString()
+      };
+
+      try {
+        const ref = window.fbMethods.collection(window.fbDb, 'users', user.uid, 'records');
+        await window.fbMethods.addDoc(ref, record);
+
+        document.getElementById('saleQty').value = '';
+        document.getElementById('salePrice').value = '';
+        document.getElementById('saleCustomer').value = '';
+        document.getElementById('saleNotes').value = '';
+        calculateSaleTotal();
+
+        showToast(`Saved to Cloud: +${formatMoney(totalAmount)}`);
+      } catch (err) {
+        console.error(err);
+        showToast('Failed to save to cloud database', 'error');
+      }
+    }
+
+    async function handleExpenseSubmit(e) {
+      e.preventDefault();
+      const user = window.fbAuth.currentUser;
+      if (!user) {
+        showToast('Please sign in first', 'error');
+        return;
+      }
+
+      const date = document.getElementById('expenseDate').value;
+      const category = document.getElementById('expenseCategory').value;
+      const amount = parseFloat(document.getElementById('expenseAmount').value);
+      const description = document.getElementById('expenseDescription').value.trim();
+      const paymentMethod = document.getElementById('expensePaymentMethod').value;
+
+      if (!date || isNaN(amount) || amount <= 0 || !description) {
+        showToast('Please provide an expense date, valid amount, and description.', 'error');
+        return;
+      }
+
+      const record = {
+        type: 'EXPENSE',
+        date: date,
+        category: category,
+        amount: amount,
+        description: description,
+        paymentMethod: paymentMethod,
+        createdAt: new Date().toISOString()
+      };
+
+      try {
+        const ref = window.fbMethods.collection(window.fbDb, 'users', user.uid, 'records');
+        await window.fbMethods.addDoc(ref, record);
+
+        document.getElementById('expenseAmount').value = '';
+        document.getElementById('expenseDescription').value = '';
+
+        showToast(`Expense Saved: -${formatMoney(amount)}`);
+      } catch (err) {
+        console.error(err);
+        showToast('Failed to save expense to cloud', 'error');
+      }
+    }
+
+    // ------------------------------------
+    // LEDGER FILTERING & CALCULATIONS
+    // ------------------------------------
+    function setFilter(type) {
+      currentFilter = type;
+      customStartDate = null;
+      customEndDate = null;
+      document.getElementById('filterStartDate').value = '';
+      document.getElementById('filterEndDate').value = '';
+
+      ['all', 'today', 'week', 'month'].forEach(b => {
+        const btn = document.getElementById(`btn-filter-${b}`);
+        if (b === type) {
+          btn.className = "filter-btn px-3 py-1.5 text-xs font-semibold rounded-lg border transition bg-spore-600 text-white border-spore-600 shadow-sm";
+        } else {
+          btn.className = "filter-btn px-3 py-1.5 text-xs font-medium rounded-lg border border-stone-300 text-stone-600 hover:bg-stone-100 transition";
+        }
+      });
+
+      window.updateDashboard();
+    }
+
+    function applyCustomRange() {
+      const start = document.getElementById('filterStartDate').value;
+      const end = document.getElementById('filterEndDate').value;
+
+      if (start && end) {
+        if (start > end) {
+          showToast('Start date cannot be after end date', 'error');
+          return;
+        }
+        currentFilter = 'custom';
+        customStartDate = start;
+        customEndDate = end;
+
+        ['all', 'today', 'week', 'month'].forEach(b => {
+          const btn = document.getElementById(`btn-filter-${b}`);
+          btn.className = "filter-btn px-3 py-1.5 text-xs font-medium rounded-lg border border-stone-300 text-stone-600 hover:bg-stone-100 transition";
+        });
+
+        window.updateDashboard();
+      }
+    }
+
+    function clearCustomRange() {
+      setFilter('all');
+    }
+
+    function getFilteredRecords() {
+      const records = window.farmRecords || [];
+      const now = new Date();
+      const todayStr = now.toISOString().split('T')[0];
+
+      return records.filter(r => {
+        if (currentFilter === 'today') {
+          return r.date === todayStr;
+        } else if (currentFilter === 'week') {
+          const rDate = new Date(r.date + 'T00:00:00');
+          const diffDays = (now - rDate) / (1000 * 60 * 60 * 24);
+          return diffDays >= 0 && diffDays <= 7;
+        } else if (currentFilter === 'month') {
+          return r.date.substring(0, 7) === todayStr.substring(0, 7);
+        } else if (currentFilter === 'custom' && customStartDate && customEndDate) {
+          return r.date >= customStartDate && r.date <= customEndDate;
+        }
+        return true;
+      }).sort((a, b) => new Date(b.date) - new Date(a.date));
+    }
+
+    function getWeekIdentifier(dateStr) {
+      const target = new Date(dateStr + 'T00:00:00');
+      const dayNr = (target.getDay() + 6) % 7;
+      target.setDate(target.getDate() - dayNr + 3);
+      const firstThursday = target.valueOf();
+      target.setMonth(0, 1);
+      if (target.getDay() !== 4) {
+        target.setMonth(0, 1 + ((4 - target.getDay()) + 7) % 7);
+      }
+      const weekNumber = 1 + Math.ceil((firstThursday - target) / 604800000);
+      return `${target.getFullYear()} · Week ${weekNumber}`;
+    }
+
+    function computeWeeklyBreakdown() {
+      const map = {};
+      (window.farmRecords || []).forEach(r => {
+        const weekKey = getWeekIdentifier(r.date);
+        if (!map[weekKey]) {
+          map[weekKey] = { income: 0, expense: 0, harvestKg: 0, count: 0, dateSample: r.date };
+        }
+        if (r.type === 'SALE') {
+          map[weekKey].income += (r.amount || 0);
+          if (r.unit === 'kg') map[weekKey].harvestKg += (r.quantity || 0);
+        } else {
+          map[weekKey].expense += (r.amount || 0);
+        }
+        map[weekKey].count++;
+      });
+
+      return Object.keys(map)
+        .map(key => ({
+          weekName: key,
+          ...map[key],
+          balance: map[key].income - map[key].expense
+        }))
+        .sort((a, b) => b.dateSample.localeCompare(a.dateSample));
+    }
+
+    window.updateDashboard = function() {
+      const filtered = getFilteredRecords();
+
+      let totalIncome = 0;
+      let totalExpense = 0;
+      let totalQtyKg = 0;
+      let salesCount = 0;
+      let expenseCount = 0;
+
+      filtered.forEach(r => {
+        if (r.type === 'SALE') {
+          totalIncome += (r.amount || 0);
+          salesCount++;
+          if (r.unit === 'kg') {
+            totalQtyKg += (r.quantity || 0);
+          } else if (r.unit === 'packets') {
+            totalQtyKg += (r.quantity * 0.2);
+          }
+        } else if (r.type === 'EXPENSE') {
+          totalExpense += (r.amount || 0);
+          expenseCount++;
+        }
+      });
+
+      const netBalance = totalIncome - totalExpense;
+
+      // 7-day rolling window computation
+      const now = new Date();
+      let thisWeekIncome = 0;
+      let thisWeekExpense = 0;
+      (window.farmRecords || []).forEach(r => {
+        const rDate = new Date(r.date + 'T00:00:00');
+        const diffDays = (now - rDate) / (1000 * 60 * 60 * 24);
+        if (diffDays >= 0 && diffDays <= 7) {
+          if (r.type === 'SALE') thisWeekIncome += (r.amount || 0);
+          if (r.type === 'EXPENSE') thisWeekExpense += (r.amount || 0);
+        }
+      });
+      const thisWeekBalance = thisWeekIncome - thisWeekExpense;
+
+      document.getElementById('statIncome').textContent = formatMoney(totalIncome);
+      document.getElementById('statSalesCount').textContent = `${salesCount} sale records`;
+
+      document.getElementById('statExpense').textContent = formatMoney(totalExpense);
+      document.getElementById('statExpenseCount').textContent = `${expenseCount} expense logs`;
+
+      const netEl = document.getElementById('statNetBalance');
+      const netLabel = document.getElementById('statNetLabel');
+      const iconContainer = document.getElementById('balanceIconContainer');
+
+      netEl.textContent = formatMoney(netBalance);
+      if (netBalance >= 0) {
+        netEl.className = "text-lg sm:text-2xl font-bold text-emerald-900";
+        netLabel.textContent = "Positive Net Profit";
+        netLabel.className = "text-[11px] text-emerald-700 font-medium mt-0.5";
+        iconContainer.className = "p-2 rounded-xl bg-emerald-200/80 text-emerald-900";
+      } else {
+        netEl.className = "text-lg sm:text-2xl font-bold text-rose-900";
+        netLabel.textContent = "Net Deficit / Loss";
+        netLabel.className = "text-[11px] text-rose-700 font-medium mt-0.5";
+        iconContainer.className = "p-2 rounded-xl bg-rose-200/80 text-rose-900";
+      }
+
+      document.getElementById('statTotalQuantity').textContent = `${totalQtyKg.toFixed(1)} kg`;
+      
+      const weekNetEl = document.getElementById('statWeeklyBalance');
+      weekNetEl.textContent = formatMoney(thisWeekBalance);
+      if (thisWeekBalance >= 0) {
+        weekNetEl.className = "text-lg sm:text-2xl font-bold text-emerald-900";
+      } else {
+        weekNetEl.className = "text-lg sm:text-2xl font-bold text-rose-900";
+      }
+
+      document.getElementById('footerTotalIncome').textContent = formatMoney(totalIncome);
+      document.getElementById('footerTotalExpense').textContent = formatMoney(totalExpense);
+      document.getElementById('footerTotalBalance').textContent = formatMoney(netBalance);
+      document.getElementById('filteredStatsSummary').textContent = `${salesCount} sales, ${expenseCount} expenses`;
+
+      renderRecords(filtered);
+      renderWeeklyBreakdown();
+      lucide.createIcons();
+    };
+
+    function renderRecords(customSet = null) {
+      const tableBody = document.getElementById('recordsTableBody');
+      const emptyState = document.getElementById('emptyState');
+      const searchVal = (document.getElementById('searchRecordsInput').value || '').toLowerCase().trim();
+      const typeFilter = document.getElementById('typeFilterSelect').value;
+
+      let list = customSet !== null ? customSet : getFilteredRecords();
+
+      if (searchVal) {
+        list = list.filter(r => {
+          const matchVariety = r.cropVariety && r.cropVariety.toLowerCase().includes(searchVal);
+          const matchCustomer = r.customer && r.customer.toLowerCase().includes(searchVal);
+          const matchNotes = r.notes && r.notes.toLowerCase().includes(searchVal);
+          const matchCat = r.category && r.category.toLowerCase().includes(searchVal);
+          const matchDesc = r.description && r.description.toLowerCase().includes(searchVal);
+          const matchDate = r.date && r.date.includes(searchVal);
+          return matchVariety || matchCustomer || matchNotes || matchCat || matchDesc || matchDate;
+        });
+      }
+
+      if (typeFilter !== 'ALL') {
+        list = list.filter(r => r.type === typeFilter);
+      }
+
+      document.getElementById('recordCountBadge').textContent = list.length;
+
+      if (list.length === 0) {
+        tableBody.innerHTML = '';
+        emptyState.classList.remove('hidden');
+        return;
+      }
+
+      emptyState.classList.add('hidden');
+
+      let html = '';
+      list.forEach(r => {
+        const isSale = r.type === 'SALE';
+        const formattedDate = formatDateDisplay(r.date);
+
+        if (isSale) {
+          html += `
+            <tr class="hover:bg-stone-50/80 transition">
+              <td class="py-3 px-3 sm:px-4 font-medium text-stone-800 whitespace-nowrap">${formattedDate}</td>
+              <td class="py-3 px-2 sm:px-3 whitespace-nowrap">
+                <span class="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">
+                  <i data-lucide="arrow-down-left" class="w-3 h-3 text-emerald-700"></i> Sale
+                </span>
+              </td>
+              <td class="py-3 px-3 sm:px-4">
+                <div class="font-semibold text-stone-800 flex items-center gap-1">
+                  <span>${escapeHtml(r.cropVariety)} Mushroom</span>
+                  <span class="text-[10px] bg-stone-100 text-stone-600 px-1.5 py-0.5 rounded">${escapeHtml(r.paymentStatus || 'Paid')}</span>
+                </div>
+                <div class="text-xs text-stone-500 flex flex-wrap gap-1 items-center mt-0.5">
+                  <span>Buyer: <strong class="text-stone-700">${escapeHtml(r.customer || 'Direct')}</strong></span>
+                  ${r.notes ? `· <span class="italic text-stone-400">"${escapeHtml(r.notes)}"</span>` : ''}
+                </div>
+              </td>
+              <td class="py-3 px-2 sm:px-3 text-right whitespace-nowrap text-stone-600 text-xs">
+                <div><b>${r.quantity}</b> ${r.unit}</div>
+                <div class="text-[11px] text-stone-400">@ ${formatMoney(r.unitPrice)}/${r.unit}</div>
+              </td>
+              <td class="py-3 px-3 sm:px-4 text-right font-bold text-emerald-700 whitespace-nowrap">
+                +${formatMoney(r.amount)}
+              </td>
+              <td class="py-3 px-2 sm:px-3 text-center no-print">
+                <button onclick="deleteRecordPrompt('${r.id}')" title="Delete entry" class="p-1.5 rounded-lg text-stone-400 hover:text-rose-600 hover:bg-rose-50 transition">
+                  <i data-lucide="trash" class="w-3.5 h-3.5"></i>
+                </button>
+              </td>
+            </tr>
+          `;
+        } else {
+          html += `
+            <tr class="hover:bg-stone-50/80 transition">
+              <td class="py-3 px-3 sm:px-4 font-medium text-stone-800 whitespace-nowrap">${formattedDate}</td>
+              <td class="py-3 px-2 sm:px-3 whitespace-nowrap">
+                <span class="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 border border-rose-200">
+                  <i data-lucide="arrow-up-right" class="w-3 h-3 text-rose-700"></i> Expense
+                </span>
+              </td>
+              <td class="py-3 px-3 sm:px-4">
+                <div class="font-semibold text-stone-800 flex items-center gap-1">
+                  <span>${escapeHtml(r.category)}</span>
+                  <span class="text-[10px] bg-stone-100 text-stone-600 px-1.5 py-0.5 rounded">${escapeHtml(r.paymentMethod || 'Paid')}</span>
+                </div>
+                <div class="text-xs text-stone-500 mt-0.5">${escapeHtml(r.description)}</div>
+              </td>
+              <td class="py-3 px-2 sm:px-3 text-right whitespace-nowrap text-stone-400 text-xs">—</td>
+              <td class="py-3 px-3 sm:px-4 text-right font-bold text-rose-700 whitespace-nowrap">
+                -${formatMoney(r.amount)}
+              </td>
+              <td class="py-3 px-2 sm:px-3 text-center no-print">
+                <button onclick="deleteRecordPrompt('${r.id}')" title="Delete entry" class="p-1.5 rounded-lg text-stone-400 hover:text-rose-600 hover:bg-rose-50 transition">
+                  <i data-lucide="trash" class="w-3.5 h-3.5"></i>
+                </button>
+              </td>
+            </tr>
+          `;
+        }
+      });
+
+      tableBody.innerHTML = html;
+      lucide.createIcons();
+    }
+
+    function renderWeeklyBreakdown() {
+      const container = document.getElementById('weeklyBreakdownList');
+      const weeks = computeWeeklyBreakdown();
+
+      if (weeks.length === 0) {
+        container.innerHTML = '<p class="text-xs text-stone-400 italic">No weekly history yet.</p>';
+        return;
+      }
+
+      let html = '';
+      weeks.forEach(w => {
+        const isProfit = w.balance >= 0;
+        html += `
+          <div class="p-2.5 rounded-xl border border-stone-200 bg-stone-50/60 hover:bg-stone-100/60 transition flex items-center justify-between">
+            <div>
+              <div class="font-semibold text-stone-800 text-xs">${w.weekName}</div>
+              <div class="text-[11px] text-stone-500 flex gap-2 mt-0.5">
+                <span class="text-emerald-700">+${formatMoney(w.income)}</span>
+                <span class="text-rose-700">-${formatMoney(w.expense)}</span>
+                ${w.harvestKg > 0 ? `<span class="text-stone-600">(${w.harvestKg.toFixed(1)} kg)</span>` : ''}
+              </div>
+            </div>
+            <div class="text-right">
+              <span class="font-bold text-xs ${isProfit ? 'text-emerald-700' : 'text-rose-700'}">
+                ${isProfit ? '+' : ''}${formatMoney(w.balance)}
+              </span>
+              <div class="text-[10px] text-stone-400 uppercase tracking-wider">${isProfit ? 'Gain' : 'Deficit'}</div>
+            </div>
+          </div>
+        `;
+      });
+
+      container.innerHTML = html;
+    }
+
+    function deleteRecordPrompt(docId) {
+      const user = window.fbAuth.currentUser;
+      if (!user) return;
+
+      openModal({
+        title: 'Delete from Cloud DB?',
+        desc: 'This item will be permanently removed from your account.',
+        confirmColor: 'bg-rose-600 hover:bg-rose-700',
+        onConfirm: async () => {
+          try {
+            const docRef = window.fbMethods.doc(window.fbDb, 'users', user.uid, 'records', docId);
+            await window.fbMethods.deleteDoc(docRef);
+            showToast('Record deleted from cloud');
+          } catch (err) {
+            console.error(err);
+            showToast('Failed to delete record', 'error');
+          }
+        }
+      });
+    }
+
+    function exportToCSV() {
+      const records = window.farmRecords || [];
+      if (records.length === 0) {
+        showToast('No records available to export', 'error');
+        return;
+      }
+
+      const headers = ['Record ID', 'Date', 'Type', 'Category / Variety', 'Quantity', 'Unit', 'Unit Price', 'Total Amount', 'Customer / Desc', 'Payment Info', 'Notes'];
+      const rows = records.map(r => {
+        if (r.type === 'SALE') {
+          return [
+            r.id, r.date, 'SALE', r.cropVariety, r.quantity, r.unit, r.unitPrice, r.amount,
+            `"${(r.customer || '').replace(/"/g, '""')}"`,
+            `"${(r.paymentStatus || '').replace(/"/g, '""')}"`,
+            `"${(r.notes || '').replace(/"/g, '""')}"`
+          ];
+        } else {
+          return [
+            r.id, r.date, 'EXPENSE', r.category, '', '', '', r.amount,
+            `"${(r.description || '').replace(/"/g, '""')}"`,
+            `"${(r.paymentMethod || '').replace(/"/g, '""')}"`, ''
+          ];
+        }
+      });
+
+      const csvContent = "data:text/csv;charset=utf-8," + [headers.join(','), ...rows.map(e => e.join(','))].join('\n');
+      const encodedUri = encodeURI(csvContent);
+      const link = document.createElement("a");
+      link.setAttribute("href", encodedUri);
+      link.setAttribute("download", `farm_cloud_ledger_${new Date().toISOString().split('T')[0]}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      showToast('CSV downloaded');
+    }
+
+    let currentModalConfirmHandler = null;
+    function openModal({ title, desc, onConfirm, confirmColor = 'bg-rose-600' }) {
+      const modal = document.getElementById('confirmModal');
+      document.getElementById('modalTitle').textContent = title;
+      document.getElementById('modalDesc').textContent = desc;
+      const confirmBtn = document.getElementById('modalConfirmBtn');
+      confirmBtn.className = `px-4 py-2 text-xs font-semibold rounded-xl text-white transition ${confirmColor}`;
+
+      currentModalConfirmHandler = () => {
+        onConfirm();
+        closeModal();
+      };
+
+      confirmBtn.onclick = currentModalConfirmHandler;
+      document.getElementById('modalCancelBtn').onclick = closeModal;
+      modal.classList.remove('hidden');
+      lucide.createIcons();
+    }
+
+    function closeModal() {
+      document.getElementById('confirmModal').classList.add('hidden');
+      currentModalConfirmHandler = null;
+    }
+
+    function showToast(message, type = 'success') {
+      const container = document.getElementById('toastContainer');
+      const toast = document.createElement('div');
+      const isSuccess = type === 'success';
+
+      toast.className = `px-4 py-3 rounded-xl shadow-lg border text-xs font-semibold flex items-center gap-2 transform transition-all duration-300 pointer-events-auto ${
+        isSuccess ? 'bg-emerald-800 text-white border-emerald-700' : 'bg-rose-800 text-white border-rose-700'
+      }`;
+
+      toast.innerHTML = `
+        <i data-lucide="${isSuccess ? 'check-circle' : 'alert-circle'}" class="w-4 h-4"></i>
+        <span>${message}</span>
+      `;
+
+      container.appendChild(toast);
+      lucide.createIcons();
+
+      setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(-8px)';
+        setTimeout(() => toast.remove(), 3200);
+      }, 3200);
+    }
+
+    function formatMoney(amount) {
+      if (isNaN(amount)) amount = 0;
+      return `${currentCurrency} ${Number(amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    }
+
+    function formatDateDisplay(dateStr) {
+      if (!dateStr) return '';
+      const parts = dateStr.split('-');
+      if (parts.length !== 3) return dateStr;
+      const d = new Date(parts[0], parts[1] - 1, parts[2]);
+      return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+    }
+
+    function escapeHtml(text) {
+      if (!text) return '';
+      return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+    }
+  </script>
+</body>
+</html>
